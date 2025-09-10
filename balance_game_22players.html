@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>짝꿍 찾기 밸런스 게임 (22명)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Jua&display=swap" rel="stylesheet">
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Constants for the game
+        const TOTAL_PLAYERS = 22;
+        const QUESTIONS_COUNT = 10;
+        const COLLECTION_PATH = 'games/' + (typeof __app_id !== 'undefined' ? __app_id : 'default-app-id') + '/players';
+
+        // Firebase global variables
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app;
+        let auth;
+        let db;
+        let userId = '';
+
+        // UI elements
+        const startScreen = document.getElementById('start-screen');
+        const studentInfoScreen = document.getElementById('student-info-screen');
+        const gameScreen = document.getElementById('game-screen');
+        const waitingScreen = document.getElementById('waiting-screen');
+        const resultsScreen = document.getElementById('results-screen');
+        const startButton = document.getElementById('start-button');
+        const userInfoForm = document.getElementById('user-info-form');
+        const studentNumberInput = document.getElementById('student-number-input');
+        const studentNameInput = document.getElementById('student-name-input');
+        const screenTitle = document.getElementById('screen-title');
+        const questionText = document.getElementById('question-text');
+        const optionA = document.getElementById('option-a');
+        const optionB = document.getElementById('option-b');
+        const imageA = document.getElementById('image-a');
+        const imageB = document.getElementById('image-b');
+        const textA = document.getElementById('text-a');
+        const textB = document.getElementById('text-b');
+        const nextButton = document.getElementById('next-button');
+        const waitingMessage = document.getElementById('waiting-message');
+        const resultsTable = document.getElementById('results-table');
+        const restartButton = document.getElementById('restart-button');
+
+        // Game state
+        let currentQuestionIndex = 0;
+        let playerAnswers = [];
+        let playerName = '';
+        let playerNumber = '';
+        let unsubscribeFromPlayers = null;
+
+        const questions = [
+            {
+                question: "만약 마법의 물약을 마신다면?",
+                options: {
+                    A: "하루 종일 내가 좋아하는 간식이 내 손에서 펑펑 나오는 물약",
+                    B: "내가 좋아하는 게임 속 주인공이 되어 게임을 할 수 있는 물약"
+                }
+            },
+            {
+                question: "하루 동안 가장 갖고 싶은 능력은?",
+                options: {
+                    A: "내가 그린 그림이 진짜로 뿅! 하고 나타나는 능력",
+                    B: "내가 읽은 책 속의 주인공과 이야기할 수 있는 능력"
+                }
+            },
+            {
+                question: "우리 집에 이사 온다면?",
+                options: {
+                    A: "늘 즐겁게 웃는 스폰지밥과 함께 살기",
+                    B: "귀엽고 먹는 것을 좋아하는 뚱이와 함께 살기"
+                },
+                images: {
+                    A: "https://i.imgur.com/B707N5s.png",
+                    B: "https://i.imgur.com/3929C4b.png"
+                }
+            },
+            {
+                question: "둘 중 하나의 능력을 갖게 된다면?",
+                options: {
+                    A: "눈을 감고 있어도 앞이 보이는 능력",
+                    B: "거꾸로 걸어도 넘어지지 않는 능력"
+                }
+            },
+            {
+                question: "둘 중 하나의 캐릭터와 친해진다면?",
+                options: {
+                    A: "귀여운 포켓몬스터 피카츄와 친해지기",
+                    B: "신기한 주머니를 가진 도라에몽과 친해지기"
+                },
+                images: {
+                    A: "https://i.imgur.com/8Q9jT4s.png",
+                    B: "https://i.imgur.com/j0jR0uM.png"
+                }
+            },
+            {
+                question: "다음 중 하나의 놀이공원을 만들 수 있다면?",
+                options: {
+                    A: "엄청나게 빠른 롤러코스터만 가득한 놀이공원",
+                    B: "솜사탕, 팝콘, 젤리 등 맛있는 간식만 가득한 놀이공원"
+                }
+            },
+            {
+                question: "하루 동안 다른 사람으로 살아본다면?",
+                options: {
+                    A: "학교에서 가장 인기가 많은 친구로 살아보기",
+                    B: "학교에서 가장 공부를 잘하는 친구로 살아보기"
+                }
+            },
+            {
+                question: "둘 중 하나의 비밀을 지켜야 한다면?",
+                options: {
+                    A: "친구가 좋아하는 사람이 누군지 알게 된 비밀",
+                    B: "친구가 오늘 아침에 지각한 이유에 대한 비밀"
+                }
+            },
+            {
+                question: "하루 동안 다음 중 하나의 사람이 될 수 있다면?",
+                options: {
+                    A: "아이유처럼 예쁘고 노래를 잘 부르는 사람",
+                    B: "유재석처럼 말솜씨가 뛰어나고 재밌는 사람"
+                }
+            },
+            {
+                question: "다음 중 하나만 가질 수 있다면?",
+                options: {
+                    A: "원하는 곳 어디든 갈 수 있는 마법의 문",
+                    B: "어떤 게임이든 이길 수 있는 마법의 게임기"
+                }
+            }
+        ];
+
+        // Initialize Firebase and set up authentication
+        async function initializeFirebase() {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Sign in using the provided token or anonymously
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                userId = auth.currentUser.uid;
+                console.log("Firebase initialized and user authenticated:", userId);
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+            }
+        }
+
+        // Save a player's answers to Firestore
+        async function saveAnswers() {
+            const playerDocRef = doc(db, COLLECTION_PATH, userId);
+            try {
+                await setDoc(playerDocRef, {
+                    number: playerNumber,
+                    name: playerName,
+                    answers: playerAnswers,
+                    timestamp: Date.now()
+                });
+                console.log("Player data saved successfully!");
+            } catch (error) {
+                console.error("Error saving player data:", error);
+            }
+        }
+
+        // Listen for all players' answers in real-time
+        function listenForResults() {
+            const playersColRef = collection(db, COLLECTION_PATH);
+            const q = query(playersColRef);
+
+            unsubscribeFromPlayers = onSnapshot(q, async (snapshot) => {
+                const playersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                const playerCount = playersData.length;
+                waitingMessage.innerText = `현재 ${playerCount}명의 학생이 참여했어요! 총 ${TOTAL_PLAYERS}명 중 ${playerCount}명 완료!`;
+
+                if (playerCount >= TOTAL_PLAYERS) {
+                    console.log("All players have participated. Calculating results...");
+                    waitingScreen.classList.add('hidden');
+                    await calculateAndShowResults(playersData);
+                }
+            });
+        }
+
+        // Calculate and display the final results table
+        async function calculateAndShowResults(playersData) {
+            const pairings = {}; // { 'player1Id': { 'player2Id': matchCount, ... }, ... }
+            const sortedPairs = [];
+
+            // Compare every player with every other player
+            for (let i = 0; i < playersData.length; i++) {
+                for (let j = i + 1; j < playersData.length; j++) {
+                    const player1 = playersData[i];
+                    const player2 = playersData[j];
+                    let matchCount = 0;
+
+                    if (!player1.answers || !player2.answers) continue;
+
+                    for (let k = 0; k < QUESTIONS_COUNT; k++) {
+                        if (player1.answers[k] === player2.answers[k]) {
+                            matchCount++;
+                        }
+                    }
+                    sortedPairs.push({
+                        player1: player1,
+                        player2: player2,
+                        matches: matchCount
+                    });
+                }
+            }
+            
+            // Sort pairs by match count in descending order
+            sortedPairs.sort((a, b) => b.matches - a.matches);
+
+            // Group pairs by match count
+            const groupedPairs = sortedPairs.reduce((acc, pair) => {
+                const groupKey = pair.matches;
+                if (!acc[groupKey]) {
+                    acc[groupKey] = [];
+                }
+                acc[groupKey].push(pair);
+                return acc;
+            }, {});
+
+            // Display results in a table
+            let tableHTML = `
+                <tr class="bg-gray-200">
+                    <th class="px-4 py-2 border">짝꿍</th>
+                    <th class="px-4 py-2 border">일치하는 답변 수</th>
+                    <th class="px-4 py-2 border">짝꿍 지수</th>
+                </tr>
+            `;
+
+            const rankTiers = [
+                { count: 10, name: "운명의 데스티니 짝꿍! 🩷" },
+                { count: 8, name: "찰떡궁합 짝꿍! 💖" },
+                { count: 5, name: "우정 만렙 짝꿍! 💛" },
+                { count: 2, name: "호기심 가득 짝꿍! 💚" },
+                { count: 0, name: "신비한 우정 짝꿍! 💙" }
+            ];
+
+            const addedPairs = new Set();
+            sortedPairs.forEach(pair => {
+                 const pairId = [pair.player1.id, pair.player2.id].sort().join('-');
+                 if (!addedPairs.has(pairId)) {
+                    const pairingName = rankTiers.find(tier => pair.matches >= tier.count)?.name || "신비한 우정 짝꿍! 💙";
+                    tableHTML += `
+                        <tr class="hover:bg-gray-100">
+                            <td class="px-4 py-2 border text-left">${pair.player1.number}번 ${pair.player1.name} & ${pair.player2.number}번 ${pair.player2.name}</td>
+                            <td class="px-4 py-2 border">${pair.matches} / ${QUESTIONS_COUNT}</td>
+                            <td class="px-4 py-2 border">${pairingName}</td>
+                        </tr>
+                    `;
+                    addedPairs.add(pairId);
+                 }
+            });
+
+            resultsTable.innerHTML = tableHTML;
+            resultsScreen.classList.remove('hidden');
+        }
+
+        // Handles a player's answer
+        function handleAnswer(choice) {
+            playerAnswers[currentQuestionIndex] = choice;
+            optionA.classList.remove('selected');
+            optionB.classList.remove('selected');
+            if (choice === 'A') {
+                optionA.classList.add('selected');
+            } else {
+                optionB.classList.add('selected');
+            }
+            nextButton.classList.remove('hidden');
+        }
+
+        // Shows the current question
+        function showQuestion() {
+            const q = questions[currentQuestionIndex];
+            screenTitle.innerText = `문제 ${currentQuestionIndex + 1}/${questions.length}`;
+            questionText.innerText = q.question;
+
+            textA.innerText = `A. ${q.options.A}`;
+            textB.innerText = `B. ${q.options.B}`;
+
+            imageA.classList.add('hidden');
+            imageB.classList.add('hidden');
+            if (q.images) {
+                imageA.src = q.images.A;
+                imageB.src = q.images.B;
+                imageA.classList.remove('hidden');
+                imageB.classList.remove('hidden');
+            }
+
+            optionA.classList.remove('selected');
+            optionB.classList.remove('selected');
+            nextButton.classList.add('hidden');
+        }
+
+        // Moves to the next question or saves answers if finished
+        async function nextQuestion() {
+            if (currentQuestionIndex < questions.length - 1) {
+                currentQuestionIndex++;
+                showQuestion();
+            } else {
+                gameScreen.classList.add('hidden');
+                waitingScreen.classList.remove('hidden');
+                await saveAnswers();
+                listenForResults();
+            }
+        }
+
+        // Event Listeners
+        startButton.addEventListener('click', () => {
+            startScreen.classList.add('hidden');
+            studentInfoScreen.classList.remove('hidden');
+        });
+
+        userInfoForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            if (studentNumberInput.value && studentNameInput.value) {
+                playerNumber = studentNumberInput.value;
+                playerName = studentNameInput.value;
+                studentInfoScreen.classList.add('hidden');
+                gameScreen.classList.remove('hidden');
+                currentQuestionIndex = 0;
+                playerAnswers = [];
+                showQuestion();
+            }
+        });
+
+        optionA.addEventListener('click', () => handleAnswer('A'));
+        optionB.addEventListener('click', () => handleAnswer('B'));
+        nextButton.addEventListener('click', nextQuestion);
+
+        restartButton.addEventListener('click', () => {
+            if (unsubscribeFromPlayers) {
+                unsubscribeFromPlayers();
+            }
+            resultsScreen.classList.add('hidden');
+            startScreen.classList.remove('hidden');
+            currentQuestionIndex = 0;
+            playerAnswers = [];
+        });
+
+        // Initialize Firebase on page load
+        initializeFirebase();
+    </script>
+
+    <style>
+        body {
+            font-family: 'Jua', sans-serif;
+            background: linear-gradient(135deg, #fce38a, #f38181);
+            color: #4a5568;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        .game-container {
+            max-width: 600px;
+            width: 100%;
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 20px;
+            padding: 2.5rem;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            transition: all 0.5s ease;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #ff6b6b;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        }
+        .question-box {
+            background-color: #fff;
+            border-radius: 15px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+            margin-bottom: 1.5rem;
+        }
+        .question-text {
+            font-size: 1.25rem;
+            font-weight: bold;
+            margin-bottom: 1rem;
+            color: #2d3748;
+        }
+        .option-button {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: #ffeaa7;
+            border-radius: 12px;
+            padding: 1rem;
+            font-size: 1.125rem;
+            font-weight: bold;
+            color: #2d3748;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 1rem;
+            text-align: left;
+        }
+        .option-button:hover {
+            background-color: #fed346;
+            transform: translateY(-3px);
+            box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+        }
+        .option-button.selected {
+            background-color: #ff7675;
+            color: #fff;
+            transform: scale(1.05);
+            box-shadow: 0 8px 12px rgba(0, 0, 0, 0.2);
+        }
+        .next-button {
+            background-color: #2f3640;
+            color: #fff;
+            font-weight: bold;
+            padding: 0.75rem 2rem;
+            border-radius: 9999px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .next-button:hover {
+            background-color: #1e272e;
+            transform: translateY(-2px);
+        }
+        .image-option {
+            width: 120px;
+            height: 120px;
+            object-fit: contain;
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+        }
+        .result-title {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 1rem;
+            color: #ff6b6b;
+        }
+        .hidden {
+            display: none;
+        }
+        .button-group {
+            display: grid;
+            gap: 1rem;
+        }
+        @media (min-width: 640px) {
+            .button-group {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        .form-input {
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1.5rem;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        th, td {
+            padding: 0.75rem;
+            border: 1px solid #e2e8f0;
+            text-align: center;
+        }
+        th {
+            background-color: #ff6b6b;
+            color: white;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <!-- 시작 화면 -->
+        <div id="start-screen" class="">
+            <h1 class="text-4xl font-bold text-center mb-6">짝꿍 찾기 밸런스 게임</h1>
+            <div class="flex flex-col items-center mb-6">
+                <p class="text-lg text-gray-700 mb-4">친구와 나의 마음이 얼마나 통하는지 확인해 볼까요?</p>
+                <p class="text-lg text-gray-700 mb-8">두 가지 선택지 중 마음에 드는 것을 하나씩 골라 보세요!</p>
+            </div>
+            <button id="start-button" class="bg-red-400 text-white font-bold py-3 px-8 rounded-full shadow-lg hover:bg-red-500 transition-all">게임 시작!</button>
+        </div>
+
+        <!-- 학생 정보 입력 화면 -->
+        <div id="student-info-screen" class="hidden">
+            <h1 class="text-3xl font-bold text-center mb-6">내 정보 입력하기</h1>
+            <form id="user-info-form">
+                <input id="student-number-input" type="number" placeholder="내 번호 (예: 1)" class="form-input" required>
+                <input id="student-name-input" type="text" placeholder="내 이름 (예: 김철수)" class="form-input" required>
+                <button type="submit" class="bg-blue-400 text-white font-bold py-3 px-8 rounded-full shadow-lg hover:bg-blue-500 transition-all">확인</button>
+            </form>
+        </div>
+
+        <!-- 게임 화면 -->
+        <div id="game-screen" class="hidden">
+            <h1 id="screen-title" class="mb-6"></h1>
+            <div class="question-box">
+                <p id="question-text" class="question-text"></p>
+                <div class="button-group">
+                    <button id="option-a" class="option-button">
+                        <img id="image-a" src="" alt="" class="image-option hidden">
+                        <span id="text-a"></span>
+                    </button>
+                    <button id="option-b" class="option-button">
+                        <img id="image-b" src="" alt="" class="image-option hidden">
+                        <span id="text-b"></span>
+                    </button>
+                </div>
+            </div>
+            <button id="next-button" class="next-button hidden">다음 문제로 ></button>
+        </div>
+        
+        <!-- 대기 화면 -->
+        <div id="waiting-screen" class="hidden">
+            <h1 class="text-3xl font-bold text-center mb-4">다른 친구들을 기다리는 중...</h1>
+            <p id="waiting-message" class="text-xl text-gray-700 mb-6"></p>
+            <div class="flex justify-center items-center">
+                <div class="spinner-border animate-spin inline-block w-8 h-8 border-4 rounded-full" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 결과 화면 -->
+        <div id="results-screen" class="hidden">
+            <h1 class="result-title">최고의 짝꿍 조합 결과!</h1>
+            <p class="text-xl text-gray-700 mb-6">모든 친구의 답변을 분석해 가장 마음이 잘 맞는 짝꿍들을 찾아냈어요!</p>
+            <div class="overflow-x-auto">
+                <table id="results-table" class="bg-white rounded-lg shadow-lg">
+                    <!-- Results will be injected here -->
+                </table>
+            </div>
+            <button id="restart-button" class="next-button mt-6">다시 하기</button>
+        </div>
+    </div>
+</body>
+</html>
